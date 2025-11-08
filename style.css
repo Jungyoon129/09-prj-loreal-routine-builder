@@ -253,3 +253,14 @@ body {
 .generate-btn i {
   margin-right: 8px;
 }
+.generate-btn.alt {
+  background: #fff;
+  border: 1.5px solid #444;
+  color: #444;
+  transition: 0.2s;
+  margin-bottom: 8px;
+}
+
+.generate-btn.alt:hover {
+  background: #eee;
+}
