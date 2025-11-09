@@ -1,12 +1,18 @@
 console.log("script.js loaded");
 
+/* ===================== CONFIG ===================== */
+// Cloudflare Worker 프록시 URL (본인 것)
+const WORKER_URL = "https://wispy-butterfly-505e.jlee414.workers.dev";
+// 카테고리 선택 전에 제품 숨기기 게이트
+const REQUIRE_CATEGORY_FIRST = true;
+
 /* ===================== DOM refs ===================== */
-const categoryFilter   = document.getElementById("categoryFilter");
-const productsContainer= document.getElementById("productsContainer");
-const selectedList     = document.getElementById("selectedProductsList");
-const chatForm         = document.getElementById("chatForm");
-const chatWindow       = document.getElementById("chatWindow");
-const generateBtn      = document.getElementById("generateRoutine");
+const categoryFilter    = document.getElementById("categoryFilter");
+const productsContainer = document.getElementById("productsContainer");
+const selectedList      = document.getElementById("selectedProductsList");
+const chatForm          = document.getElementById("chatForm");
+const chatWindow        = document.getElementById("chatWindow");
+const generateBtn       = document.getElementById("generateRoutine");
 
 /* ===================== State & Storage ===================== */
 const SELECT_KEY = "lr_selected_ids";
@@ -22,8 +28,29 @@ function persistSelected(){ localStorage.setItem(SELECT_KEY, JSON.stringify([...
 function persistMessages(){ localStorage.setItem(MSG_KEY, JSON.stringify(chatMessages)); }
 
 /* ===================== Helpers ===================== */
-const idOf = (p) => String(p.id);
+const idOf    = (p) => String(p.id);
 const hasText = (s) => typeof s === "string" && s.trim().length > 0;
+
+/* ===================== Gate (카테고리 선택 전) ===================== */
+function renderGate() {
+  if (!REQUIRE_CATEGORY_FIRST) return false;
+
+  const cat = (categoryFilter?.value || "").trim();
+  const needGate = !cat; // 비어 있으면 게이트 ON
+
+  if (needGate) {
+    productsContainer.innerHTML = `
+      <div class="placeholder-card" role="status" aria-live="polite">
+        <div class="placeholder-head">
+          <span class="filter-icon" aria-hidden="true">🔎</span>
+          <strong>Select a category</strong>
+        </div>
+        <p>Choose a category from the dropdown to browse products.</p>
+      </div>
+    `;
+  }
+  return needGate;
+}
 
 /* ===================== First Placeholder ===================== */
 productsContainer.innerHTML = `<div class="placeholder-message">Select a category to view products</div>`;
@@ -43,7 +70,7 @@ function displayProducts(products){
   productsContainer.innerHTML = products.map(p=>{
     const on = selectedIds.has(idOf(p));
     return `
-      <div class="product-card ${on ? "selected" : ""}" data-id="${idOf(p)}">
+      <div class="product-card ${on ? "selected" : ""}" data-id="${idOf(p)}" tabindex="0">
         <img src="${p.image}" alt="${p.name}">
         <div class="product-info">
           <h3>${p.name}</h3>
@@ -69,7 +96,15 @@ function displayProducts(products){
       else selectedIds.add(id);
       persistSelected();
       card.classList.toggle("selected");
-      renderSelected(currentProductsCache);
+      renderSelected();
+    });
+
+    // 키보드 Space/Enter로 토글
+    card.addEventListener("keydown", (e)=>{
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        card.click();
+      }
     });
 
     // Details 토글
@@ -107,27 +142,47 @@ function renderSelected() {
       const card = productsContainer.querySelector(`.product-card[data-id="${id}"]`);
       if (card) card.classList.remove("selected");
 
-      renderSelected(); // 항상 전체 기준으로 재렌더
+      renderSelected(); // 전체 기준으로 재렌더
     });
   });
 }
 
-
 /* ===================== Category & Search ===================== */
-// 동적으로 검색 입력 추가 (LevelUp: Product Search)
+// “All Categories” 프롬프트 옵션 보장
+(function ensureDefaultCategoryPrompt(){
+  if (!categoryFilter) return;
+  const hasBlank = [...categoryFilter.options].some(o => o.value === "");
+  if (!hasBlank) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "All Categories";
+    opt.selected = true;
+    categoryFilter.insertBefore(opt, categoryFilter.firstChild);
+  } else {
+    categoryFilter.value = "";
+  }
+})();
+
+// 동적 검색 입력 (LevelUp: Product Search)
 const searchWrap = document.createElement("div");
 searchWrap.className = "search-inline";
 searchWrap.innerHTML = `
-  <input id="productSearch" type="search" placeholder="Search by name, brand, tag…" aria-label="Search products"/>
+  <input id="productSearch" type="search" placeholder="Search products..." aria-label="Search products"/>
 `;
-categoryFilter.parentElement.appendChild(searchWrap);
+categoryFilter?.parentElement?.appendChild(searchWrap);
 const searchInput = document.getElementById("productSearch");
 
 function applyFilters(){
-  const cat = categoryFilter.value;
-  const q   = (searchInput.value || "").toLowerCase();
+  // 게이트: 카테고리 선택 전이면 제품 숨기기
+  if (renderGate()) {
+    currentProductsCache = [];
+    return;
+  }
 
-  const inCat = !cat ? allProducts : allProducts.filter(p => String(p.category).toLowerCase() === cat.toLowerCase());
+  const cat = (categoryFilter?.value || "").toLowerCase();
+  const q   = (searchInput?.value || "").toLowerCase();
+
+  const inCat = !cat ? allProducts : allProducts.filter(p => String(p.category).toLowerCase() === cat);
   currentProductsCache = inCat.filter(p=>{
     if (!q) return true;
     const hay = [
@@ -139,14 +194,13 @@ function applyFilters(){
   });
 
   displayProducts(currentProductsCache);
-  renderSelected(currentProductsCache);
+  renderSelected();
 }
 
-// 카테고리 변경
-categoryFilter.addEventListener("change", applyFilters);
-// 검색 입력 (간단 디바운스)
+// 카테고리 변경/검색 입력
+categoryFilter?.addEventListener("change", applyFilters);
 let t;
-searchInput.addEventListener("input", ()=>{
+searchInput?.addEventListener("input", ()=>{
   clearTimeout(t);
   t = setTimeout(applyFilters, 150);
 });
@@ -164,16 +218,48 @@ function appendMsg(role, text){
     persistMessages();
   }
 }
+
 // 기존 히스토리 복원
 if (chatMessages.length){
   chatMessages.forEach(m => appendMsg(m.role, m.content));
 }
 
-/* ===================== OpenAI (browser) ===================== */
-// ⚠️ 브라우저 호출은 키가 노출됨(학습/과제용). 실제 배포는 Worker 사용 권장.
-const OPENAI_KEY = (window && window.OPENAI_API_KEY) || "";
-if (!OPENAI_KEY){
-  console.warn("OPENAI_API_KEY 없음. secrets.js를 추가하거나 Worker로 우회하세요.");
+/* ====== Chat Reset 버튼 주입 ====== */
+(function addChatReset(){
+  if (!chatForm) return;
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.id = "resetChat";
+  resetBtn.className = "reset-btn";
+  resetBtn.title = "Reset chat";
+  resetBtn.textContent = "Reset";
+  // 폼의 끝에 붙이기 (아이콘 버튼 옆)
+  chatForm.appendChild(resetBtn);
+
+  resetBtn.addEventListener("click", ()=>{
+    chatMessages = [];
+    persistMessages();
+    chatWindow.innerHTML = "";
+    appendMsg("assistant", "Chat has been reset.");
+  });
+})();
+
+/* ===================== OpenAI via Worker ===================== */
+async function callOpenAI(messages, model = "gpt-4o-mini", temperature = 0.7){
+  const res = await fetch(WORKER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages, model, temperature })
+  });
+  // Worker는 OpenAI 원본 JSON을 그대로 반환하도록 구성되어 있음
+  if (!res.ok){
+    const t = await res.text().catch(()=> "");
+    throw new Error(`Worker error: ${res.status} ${res.statusText}\n${t}`);
+  }
+  const json = await res.json();
+  const content = json?.choices?.[0]?.message?.content;
+  if (!content) throw new Error("No content from model.");
+  return content;
 }
 
 function buildMessages(selectedProducts, followupText){
@@ -204,32 +290,8 @@ function buildMessages(selectedProducts, followupText){
   return [...base, userMsg];
 }
 
-async function callOpenAI(messages){
-  const url  = "https://api.openai.com/v1/chat/completions";
-  const body = {
-    model: "gpt-4o-mini", // 계정 가용 모델명으로 변경 가능
-    messages,
-    temperature: 0.7
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENAI_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok){
-    const t = await res.text().catch(()=> "");
-    throw new Error(`OpenAI error: ${res.status} ${res.statusText}\n${t}`);
-  }
-  const json = await res.json();
-  return json.choices?.[0]?.message?.content || "(no content)";
-}
-
 /* ===================== Generate Routine ===================== */
-generateBtn.addEventListener("click", async ()=>{
+generateBtn?.addEventListener("click", async ()=>{
   if (selectedIds.size === 0){
     appendMsg("assistant", "Please select at least one product first.");
     return;
@@ -237,7 +299,6 @@ generateBtn.addEventListener("click", async ()=>{
   appendMsg("assistant", "Building your personalized routine…");
 
   try{
-    // 전체 제품에서 선택된 것들 찾기 (카테고리 상관없이)
     const selected = allProducts.filter(p => selectedIds.has(idOf(p)));
     const messages = buildMessages(selected, "");
     const reply    = await callOpenAI(messages);
@@ -249,7 +310,7 @@ generateBtn.addEventListener("click", async ()=>{
 });
 
 /* ===================== Follow-up Chat ===================== */
-chatForm.addEventListener("submit", async (e)=>{
+chatForm?.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const input = document.getElementById("userInput");
   const text  = input.value.trim();
@@ -270,6 +331,7 @@ chatForm.addEventListener("submit", async (e)=>{
 
 /* ===================== RTL toggle (LevelUp) ===================== */
 (function injectRTL(){
+  if (!categoryFilter) return;
   const wrap = document.createElement("label");
   wrap.style.display = "inline-flex";
   wrap.style.alignItems = "center";
@@ -295,15 +357,19 @@ chatForm.addEventListener("submit", async (e)=>{
 (async function init(){
   try{
     allProducts = await loadProducts();
-    // 이미 선택되어있던 항목이 있으면 Selected 영역 동기화
-    renderSelected(allProducts);
-    // 사용자에게 카테고리 하나 선택하도록 유도 (필수 아님)
-    // categoryFilter.value = ""; // 유지
+    renderSelected(); // 기존 선택 복원
+
+    // 로드 직후 게이트 적용(카테고리 미선택이면 안내 카드)
+    if (!renderGate()) {
+      // 게이트가 꺼져 있으면 바로 렌더
+      displayProducts(allProducts);
+    }
   }catch(err){
     console.error(err);
     productsContainer.innerHTML = `<p>Could not load products.</p>`;
   }
 })();
+
 /* ===================== Clear All (선택 전체 제거) ===================== */
 (function addClearAll(){
   const panel = document.querySelector('.selected-products');
@@ -315,21 +381,17 @@ chatForm.addEventListener("submit", async (e)=>{
   btn.type = 'button';
   btn.textContent = 'Clear All';
 
-  // Generate Routine 버튼 바로 위에 추가
   const genBtn = document.getElementById('generateRoutine');
   panel.insertBefore(btn, genBtn);
 
   btn.addEventListener('click', ()=>{
     if (!selectedIds.size) return;
-
-    // 선택 초기화
     selectedIds.clear();
     persistSelected();
 
-    // UI 반영
     productsContainer.querySelectorAll('.product-card.selected')
       .forEach(card => card.classList.remove('selected'));
 
-    renderSelected(); // 전체 기준으로 재렌더
+    renderSelected();
   });
 })();
